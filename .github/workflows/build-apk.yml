@@ -29,38 +29,71 @@ jobs:
       - name: Build debug APK
         run: gradle assembleDebug
 
-      - name: Verify APK package and launcher screen markers
+      - name: Verify APK package, launcher, and screen
         shell: bash
         run: |
-          python3 - <<'PY'
+          set -euo pipefail
+          APK="app/build/outputs/apk/debug/app-debug.apk"
+          METADATA="app/build/outputs/apk/debug/output-metadata.json"
+          if [[ ! -s "$APK" ]]; then
+            echo "APK missing or empty: $APK" >&2
+            exit 1
+          fi
+          if [[ ! -s "$METADATA" ]]; then
+            echo "Build metadata missing: $METADATA" >&2
+            exit 1
+          fi
+
+          python3 - "$METADATA" <<'PY'
           import json
+          import sys
+          from pathlib import Path
+
+          info = json.loads(Path(sys.argv[1]).read_text())
+          expected = "com.tracebridge.companion"
+          if info.get("applicationId") != expected:
+              raise SystemExit(
+                  f"Unexpected application ID: {info.get('applicationId')!r}"
+              )
+          print(f"Build metadata applicationId verified: {expected}")
+          PY
+
+          AAPT="$(find "${ANDROID_HOME:-$ANDROID_SDK_ROOT}/build-tools" -type f -name aapt | sort -V | tail -n 1)"
+          if [[ -z "$AAPT" ]]; then
+            echo "Could not find Android SDK aapt tool" >&2
+            exit 1
+          fi
+          BADGING="$("$AAPT" dump badging "$APK")"
+          grep -Fq "package: name='com.tracebridge.companion'" <<<"$BADGING" || {
+            echo "APK package ID verification failed" >&2
+            exit 1
+          }
+          grep -Fq "launchable-activity: name='com.tracebridge.companion.MainActivity'" <<<"$BADGING" || {
+            echo "APK launcher activity is not com.tracebridge.companion.MainActivity" >&2
+            printf '%s\n' "$BADGING" >&2
+            exit 1
+          }
+          echo "APK package ID and launcher activity verified"
+
+          python3 - "$APK" <<'PY'
+          import sys
           import zipfile
           from pathlib import Path
 
-          apk = Path("app/build/outputs/apk/debug/app-debug.apk")
-          metadata = Path("app/build/outputs/apk/debug/output-metadata.json")
-          if not apk.is_file() or apk.stat().st_size == 0:
-              raise SystemExit(f"APK missing or empty: {apk}")
-          if not metadata.is_file():
-              raise SystemExit(f"Build metadata missing: {metadata}")
-
-          info = json.loads(metadata.read_text())
-          if info.get("applicationId") != "com.tracebridge.companion":
-              raise SystemExit(f"Unexpected application ID: {info.get('applicationId')!r}")
-
+          apk = Path(sys.argv[1])
           with zipfile.ZipFile(apk) as archive:
               dex_names = [name for name in archive.namelist()
                            if name.startswith("classes") and name.endswith(".dex")]
               dex = b"".join(archive.read(name) for name in dex_names)
-          expected = [b"API Request URL", b"HTTP Method", b"Request Body",
-                      b"Send API Request", b"API Response"]
+          expected = [b"API Request URL", b"HTTP Method", b"Headers",
+                      b"Request Body", b"Send API Request", b"API Response"]
           missing = [marker.decode() for marker in expected if marker not in dex]
           if missing:
               raise SystemExit(f"Expected API form text missing from APK DEX: {missing}")
           if b"CHECK DEVICE" in dex:
               raise SystemExit("Old CHECK DEVICE starter text found in APK DEX")
-          print(f"Verified {apk}: applicationId={info['applicationId']}; "
-                f"API request form markers present; old starter marker absent")
+          print("APK DEX verified: API request form strings are present; "
+                "old CHECK DEVICE string is absent")
           PY
 
       - name: Upload APK
