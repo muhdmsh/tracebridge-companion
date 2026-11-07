@@ -1,4 +1,3 @@
-
 package com.tracebridge.companion
 
 import android.os.Bundle
@@ -64,7 +63,7 @@ class MainActivity : AppCompatActivity() {
 
         urlInput = EditText(this).apply {
             hint = "https://example.com/api"
-            singleLine = true
+            isSingleLine = true
         }
         root.addView(urlInput, matchWidth())
 
