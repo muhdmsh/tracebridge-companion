@@ -29,6 +29,40 @@ jobs:
       - name: Build debug APK
         run: gradle assembleDebug
 
+      - name: Verify APK package and launcher screen markers
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json
+          import zipfile
+          from pathlib import Path
+
+          apk = Path("app/build/outputs/apk/debug/app-debug.apk")
+          metadata = Path("app/build/outputs/apk/debug/output-metadata.json")
+          if not apk.is_file() or apk.stat().st_size == 0:
+              raise SystemExit(f"APK missing or empty: {apk}")
+          if not metadata.is_file():
+              raise SystemExit(f"Build metadata missing: {metadata}")
+
+          info = json.loads(metadata.read_text())
+          if info.get("applicationId") != "com.tracebridge.companion":
+              raise SystemExit(f"Unexpected application ID: {info.get('applicationId')!r}")
+
+          with zipfile.ZipFile(apk) as archive:
+              dex_names = [name for name in archive.namelist()
+                           if name.startswith("classes") and name.endswith(".dex")]
+              dex = b"".join(archive.read(name) for name in dex_names)
+          expected = [b"API Request URL", b"HTTP Method", b"Request Body",
+                      b"Send API Request", b"API Response"]
+          missing = [marker.decode() for marker in expected if marker not in dex]
+          if missing:
+              raise SystemExit(f"Expected API form text missing from APK DEX: {missing}")
+          if b"CHECK DEVICE" in dex:
+              raise SystemExit("Old CHECK DEVICE starter text found in APK DEX")
+          print(f"Verified {apk}: applicationId={info['applicationId']}; "
+                f"API request form markers present; old starter marker absent")
+          PY
+
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
